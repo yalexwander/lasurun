@@ -1,0 +1,91 @@
+#!/usr/bin/env perl
+
+=pod
+
+lasurun -l logfile [ options ] command to run
+
+Options:
+
+-l logfile    Write logged exit codes and time it occured to `logfile`
+-n <int>      Keep last N records for each exit code. Default: 1
+-c <codes>    Comma separated list of integer codes, that must be recorded. 
+              By default all exit codes recorded
+
+=cut
+
+use strict;
+use warnings;
+use Getopt::Std;
+use JSON::PP;
+use POSIX qw(strftime);
+
+sub read_file {
+    local $/ = undef;
+    open(my $fh, '<', $_[0]) or die "$!";
+    my $slurp = <$fh>; 
+    close $fh;
+    return $slurp;
+}
+
+sub print_usage {
+    my (undef, $usage, undef) = split(/\n=pod\n|\n=cut\n/, read_file($0));
+    print $usage . "\n";
+}
+
+my %cli_opts;
+getopts('hl:c:n:', \%cli_opts);
+my ($logfile, $codes_string, $max_records) = ($cli_opts{'l'}, $cli_opts{'c'}, $cli_opts{'n'});
+
+if ($cli_opts{'h'}) {
+    print_usage;
+    exit 0;
+}
+
+if (!$logfile) {
+    die "Error: No statistics file specified (-l)\n";
+}
+
+my @codes_to_track = ('all');
+if ($codes_string) {
+    @codes_to_track = map { int($_) } split(/,/, $codes_string);
+}
+
+$max_records //= 1;
+
+my @command = @ARGV;
+if (@command == 0) {
+    die "Error: No command specified to execute\n";
+}
+
+my $stats = {};
+if (-f $logfile) {
+    my $json_text = read_file($logfile);
+   
+    $stats = decode_json($json_text);
+}
+
+my $return_code = system(@command);
+$return_code = $return_code >> 8;
+
+my $command_string = join(' ', @command);
+$stats->{"command"} = $command_string;
+
+foreach my $code (@codes_to_track) {
+    if ($code eq 'all' or $code == $return_code) {
+        $stats->{$return_code} //= [];
+
+        push @{$stats->{$return_code}}, POSIX::strftime("%Y-%m-%d %H:%M:%S", localtime);
+
+        if (@{$stats->{$return_code}} > $max_records) {
+            shift @{$stats->{$return_code}};
+        }
+
+        open(my $out_fh, '>', $logfile) or die "Cannot open file $logfile for writing: $!";
+        print $out_fh JSON::PP->new->ascii->pretty->allow_nonref->encode($stats);
+        close($out_fh);
+
+        last;
+    }
+}
+
+exit $return_code;
